@@ -2,6 +2,8 @@ package maps
 
 import (
 	"fmt"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 // ConflictResolver is a function type that is invoked when Merge is merging maps that
@@ -178,6 +180,16 @@ func MapEntries[M1 ~map[K1]V1, M2 ~map[K2]V2, K1, K2 comparable, V1, V2 any](in 
 	return res
 }
 
+// MapToSlice transforms a map into a slice by invoking the mapper on each entry.
+func MapToSlice[M ~map[K]V, K comparable, V any, R any](m M, mapper func(key K, val V) R) []R {
+	res := make([]R, 0, len(m))
+	for k, v := range m {
+		r := mapper(k, v)
+		res = append(res, r)
+	}
+	return res
+}
+
 // Predicate represents a predicate (boolean-value function).
 type Predicate[K comparable, V any] func(key K, val V) bool
 
@@ -190,6 +202,115 @@ func Filter[M ~map[K]V, K comparable, V any](m M, fn Predicate[K, V]) M {
 		if fn(k, v) {
 			res[k] = v
 		}
+	}
+	return res
+}
+
+// TakeIf iterates over a map and for all entries that satisfy the predicate the
+// entry is passed to the function/closure provided. TakeIf is similar to Filter
+// but avoids the overhead of creating another map and instead directly passes the
+// entries to a callback to be processed.
+func TakeIf[M ~map[K]V, K comparable, V any](m M, pred Predicate[K, V], fn func(key K, val V)) {
+	for k, v := range m {
+		if pred(k, v) {
+			fn(k, v)
+		}
+	}
+}
+
+type DiffReason int
+
+const (
+	// DiffValue is a flag indicating the values for a given key differ between maps
+	DiffValue DiffReason = 0
+	// DiffMissingLeft is a flag indicating a key exists in the right map but doesn't
+	// exist in the left map
+	DiffMissingLeft DiffReason = 1
+	// DiffMissingRight is a flag indicating a key exist in the left map but doesn't
+	// exist in the right map
+	DiffMissingRight DiffReason = 2
+)
+
+type EntryComparison[V comparable] struct {
+	Left   V
+	Right  V
+	Diff   string
+	Reason DiffReason
+}
+
+// Diff compares two maps and returns a map containing the keys that differ along
+// with the differences.
+func Diff[M ~map[K]V, K, V comparable](left M, right M) map[K]EntryComparison[V] {
+	res := make(map[K]EntryComparison[V])
+	for key, val := range left {
+		otherVal, ok := right[key]
+		if !ok || val != otherVal {
+			var reason DiffReason
+			if !ok {
+				reason = DiffMissingRight
+			}
+			if ok && val != otherVal {
+				reason = DiffValue
+			}
+			res[key] = EntryComparison[V]{
+				Left:   val,
+				Right:  otherVal,
+				Diff:   cmp.Diff(left, right),
+				Reason: reason,
+			}
+		}
+	}
+
+	for key, val := range right {
+		otherVal, ok := left[key]
+		if !ok || val != otherVal {
+			var reason DiffReason
+			if !ok {
+				reason = DiffMissingLeft
+			}
+			if ok && val != otherVal {
+				reason = DiffValue
+			}
+			res[key] = EntryComparison[V]{
+				Left:   otherVal,
+				Right:  val,
+				Diff:   cmp.Diff(left, right),
+				Reason: reason,
+			}
+		}
+	}
+
+	return res
+}
+
+// KeyDiff inspects the left and right map returning two slices of keys: the keys
+// in the left map that don't exist in the right map, and the keys that exist
+// in the right map but don't exist in the left map.
+func KeyDiff[M ~map[K]V, K comparable, V any](left M, right M) ([]K, []K) {
+	leftKeys := make([]K, 0)
+	rightKeys := make([]K, 0)
+
+	for k := range left {
+		if _, ok := right[k]; !ok {
+			leftKeys = append(leftKeys, k)
+		}
+	}
+
+	for k := range right {
+		if _, ok := left[k]; !ok {
+			rightKeys = append(rightKeys, k)
+		}
+	}
+
+	return leftKeys, rightKeys
+}
+
+// Invert creates a map composed of inverted keys and values. If the values are
+// duplicated it will result in overwrites in the inverted map.
+func Invert[M ~map[K]V, K, V comparable](m M) map[V]K {
+	res := make(map[V]K, len(m))
+	for k, v := range m {
+		res[v] = k
 	}
 	return res
 }
